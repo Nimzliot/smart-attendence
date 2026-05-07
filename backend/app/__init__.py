@@ -18,7 +18,16 @@ def create_app():
     app.config.from_object(Config)
 
     Path(app.config["UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
-    CORS(app, resources={r"/api/*": {"origins": [app.config["FRONTEND_URL"], "*"]}})
+    CORS(
+        app,
+        resources={
+            r"/api/*": {
+                "origins": "*",
+                "allow_headers": ["Content-Type", "Authorization"],
+                "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            }
+        },
+    )
     configure_logging(app)
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
