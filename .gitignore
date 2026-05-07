@@ -1,0 +1,19 @@
+# Environment secrets
+backend/.env
+frontend/.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+backend/logs/
+backend/uploads/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/

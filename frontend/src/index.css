@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+body {
+  @apply min-h-screen bg-slate-100 text-slate-900 antialiased transition-colors duration-300 dark:bg-slate-950 dark:text-slate-50;
+  font-family: "Segoe UI", sans-serif;
+  background-image:
+    radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 24%),
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.16), transparent 26%),
+    linear-gradient(180deg, rgba(2, 6, 23, 0.98), rgba(3, 7, 18, 1));
+  background-attachment: fixed;
+}
+
+#root {
+  @apply min-h-screen;
+}
+
+.glass-panel {
+  @apply rounded-[28px] border border-cyan-500/15 bg-white/70 shadow-glass backdrop-blur-xl dark:border-cyan-400/10 dark:bg-slate-950/70;
+}
+
+.page-shell {
+  @apply space-y-6 animate-fade-up;
+}
