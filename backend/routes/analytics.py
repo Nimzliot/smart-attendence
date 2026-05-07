@@ -23,13 +23,17 @@ def overview():
         day_start = datetime.now(timezone.utc) - timedelta(days=days_back)
         day_start = day_start.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
-        result = (
-            supabase.table("attendance")
-            .select("id, student_id")
-            .gte("marked_at", day_start.isoformat())
-            .lt("marked_at", day_end.isoformat())
-            .execute()
-        )
-        trend.append({"date": day_start.strftime("%a"), "present": len({row["student_id"] for row in (result.data or [])})})
+        try:
+            result = (
+                supabase.table("attendance")
+                .select("id, student_id")
+                .gte("marked_at", day_start.isoformat())
+                .lt("marked_at", day_end.isoformat())
+                .execute()
+            )
+            present_count = len({row["student_id"] for row in (result.data or []) if row.get("student_id")})
+        except Exception:
+            present_count = 0
+        trend.append({"date": day_start.strftime("%a"), "present": present_count})
 
     return success({**dashboard, "weeklyTrend": trend})
