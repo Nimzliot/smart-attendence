@@ -11,38 +11,46 @@ export default function FaceRegistrationPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const pollRef = useRef(null);
+  const lastRegistrationStatusRef = useRef("");
 
   useEffect(() => {
     const load = async () => {
-      try {
-        const [studentRows, overview, registrationState] = await Promise.all([
-          dashboardService.getStudents(),
-          dashboardService.getOverview(),
-          dashboardService.getHardwareRegistrationStatus(),
-        ]);
-        setStudents(studentRows);
-        setDeviceStatus(overview.deviceStatus || []);
-        setRegistration(registrationState);
-      } catch {
+      const [studentsResult, overviewResult, registrationResult] = await Promise.allSettled([
+        dashboardService.getStudents(),
+        dashboardService.getOverview(),
+        dashboardService.getHardwareRegistrationStatus(),
+      ]);
+
+      if (studentsResult.status === "fulfilled") {
+        setStudents(studentsResult.value || []);
+      } else {
         setStudents([]);
-        setDeviceStatus([]);
-      } finally {
-        setLoading(false);
       }
+
+      if (overviewResult.status === "fulfilled") {
+        setDeviceStatus(overviewResult.value.deviceStatus || []);
+      } else {
+        setDeviceStatus([]);
+      }
+
+      if (registrationResult.status === "fulfilled") {
+        setRegistration(registrationResult.value);
+      } else {
+        setRegistration(null);
+      }
+
+      setLoading(false);
     };
 
-    load();
+    load().catch(() => {
+      setStudents([]);
+      setDeviceStatus([]);
+      setRegistration(null);
+      setLoading(false);
+    });
   }, []);
 
   useEffect(() => {
-    if (!registration?.pending) {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-      return;
-    }
-
     pollRef.current = setInterval(async () => {
       try {
         const [registrationState, overview] = await Promise.all([
@@ -52,19 +60,17 @@ export default function FaceRegistrationPage() {
         setRegistration(registrationState);
         setDeviceStatus(overview.deviceStatus || []);
 
-        if (registrationState.status === "completed") {
+        if (registrationState.status === "completed" && lastRegistrationStatusRef.current !== "completed") {
           toast.success(registrationState.message || "Face registered successfully");
-          clearInterval(pollRef.current);
-          pollRef.current = null;
         }
 
-        if (registrationState.status === "failed") {
+        if (registrationState.status === "failed" && lastRegistrationStatusRef.current !== "failed") {
           toast.error(registrationState.message || "Hardware face registration failed");
-          clearInterval(pollRef.current);
-          pollRef.current = null;
         }
+
+        lastRegistrationStatusRef.current = registrationState.status || "";
       } catch {
-        // Keep polling quietly while the user waits for the device.
+        // Keep polling quietly so device status can recover automatically.
       }
     }, 4000);
 
@@ -74,9 +80,9 @@ export default function FaceRegistrationPage() {
         pollRef.current = null;
       }
     };
-  }, [registration?.pending, registration?.status]);
+  }, []);
 
-  const primaryDevice = deviceStatus[0];
+  const primaryDevice = deviceStatus.find((device) => device.is_alive) || deviceStatus[0];
 
   const submit = async () => {
     if (!studentId) return toast.error("Select a student first");
@@ -136,6 +142,9 @@ export default function FaceRegistrationPage() {
               <option value="">Select student</option>
               {students.map((student) => <option key={student.id} value={student.id}>{student.full_name}</option>)}
             </select>
+            {!students.length ? (
+              <p className="mt-3 text-sm text-amber-600 dark:text-amber-300">No students loaded yet. Create a student first or make sure the student list API is reachable.</p>
+            ) : null}
             <div className="mt-6 flex flex-wrap gap-3">
               <Button className="px-6 py-3" onClick={submit} disabled={submitting || registration?.pending || !primaryDevice?.is_alive}>
                 {submitting ? "Starting..." : "Start ESP32 Capture"}
