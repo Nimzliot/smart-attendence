@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { dashboardService } from "../services/dashboardService";
-import { Badge, Button, Card } from "../components/ui";
+import { Badge, Button, Card, Input } from "../components/ui";
 
 export default function FaceRegistrationPage() {
   const [students, setStudents] = useState([]);
@@ -10,6 +10,10 @@ export default function FaceRegistrationPage() {
   const [deviceStatus, setDeviceStatus] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [streamUrl, setStreamUrl] = useState(import.meta.env.VITE_ESP32_STREAM_URL || "");
   const pollRef = useRef(null);
   const lastRegistrationStatusRef = useRef("");
 
@@ -83,6 +87,22 @@ export default function FaceRegistrationPage() {
   }, []);
 
   const primaryDevice = deviceStatus.find((device) => device.is_alive) || deviceStatus[0];
+  const selectedStudent = useMemo(
+    () => students.find((student) => student.id === studentId) || null,
+    [studentId, students]
+  );
+
+  useEffect(() => {
+    if (!selectedFile) {
+      setPreviewUrl("");
+      return undefined;
+    }
+
+    const objectUrl = URL.createObjectURL(selectedFile);
+    setPreviewUrl(objectUrl);
+
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [selectedFile]);
 
   const submit = async () => {
     if (!studentId) return toast.error("Select a student first");
@@ -110,6 +130,39 @@ export default function FaceRegistrationPage() {
     }
   };
 
+  const handleFileChange = (event) => {
+    const file = event.target.files?.[0];
+    setSelectedFile(file || null);
+  };
+
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const [, base64 = ""] = result.split(",");
+      resolve(base64);
+    };
+    reader.onerror = () => reject(new Error("Could not read image file"));
+    reader.readAsDataURL(file);
+  });
+
+  const uploadFace = async () => {
+    if (!studentId) return toast.error("Select a student first");
+    if (!selectedFile) return toast.error("Choose an image first");
+
+    setUploading(true);
+    try {
+      const image = await fileToBase64(selectedFile);
+      await dashboardService.registerFace(studentId, { image });
+      toast.success(`Face uploaded for ${selectedStudent?.full_name || "student"}`);
+      setSelectedFile(null);
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "Could not upload face image");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="page-shell">
@@ -134,10 +187,10 @@ export default function FaceRegistrationPage() {
           </Badge>
         </div>
 
-        <div className="mt-8 grid gap-6 xl:grid-cols-[1fr_1fr]">
+        <div className="mt-8 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
           <div className="rounded-[26px] border border-white/10 bg-slate-950/35 p-6">
             <h3 className="text-lg font-bold">Registration Setup</h3>
-            <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Use the live device listed on the right. When hardware registration is active, the ESP32 will capture one face image and send it to the backend for enrollment.</p>
+            <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Pick a student once, then either start ESP32 capture from the live stream or upload a clear face image manually.</p>
             <select className="mt-6 w-full rounded-2xl border border-slate-200 bg-white/80 px-4 py-4 text-sm dark:border-slate-700 dark:bg-slate-900/70" value={studentId} onChange={(e) => setStudentId(e.target.value)}>
               <option value="">Select student</option>
               {students.map((student) => <option key={student.id} value={student.id}>{student.full_name}</option>)}
@@ -145,31 +198,76 @@ export default function FaceRegistrationPage() {
             {!students.length ? (
               <p className="mt-3 text-sm text-amber-600 dark:text-amber-300">No students loaded yet. Create a student first or make sure the student list API is reachable.</p>
             ) : null}
-            <div className="mt-6 flex flex-wrap gap-3">
-              <Button className="px-6 py-3" onClick={submit} disabled={submitting || registration?.pending || !primaryDevice?.is_alive}>
-                {submitting ? "Starting..." : "Start ESP32 Capture"}
-              </Button>
-              <Button variant="secondary" className="px-6 py-3" onClick={cancelRegistration} disabled={!registration?.pending}>
-                Cancel
-              </Button>
+
+            <div className="mt-6 grid gap-6 xl:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-xs uppercase tracking-[0.35em] text-slate-500 dark:text-slate-400">ESP32 Capture</p>
+                <p className="mt-2 text-sm leading-7 text-slate-500 dark:text-slate-300">Use the live stream to position the student, then trigger the ESP32-CAM to capture one image for registration.</p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <Button className="px-6 py-3" onClick={submit} disabled={submitting || registration?.pending || !primaryDevice?.is_alive}>
+                    {submitting ? "Starting..." : "Start ESP32 Capture"}
+                  </Button>
+                  <Button variant="secondary" className="px-6 py-3" onClick={cancelRegistration} disabled={!registration?.pending}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-xs uppercase tracking-[0.35em] text-slate-500 dark:text-slate-400">Manual Upload</p>
+                <p className="mt-2 text-sm leading-7 text-slate-500 dark:text-slate-300">Upload a front-facing photo if you want to register without waiting for the hardware capture cycle.</p>
+                <Input className="mt-4 cursor-pointer px-3 py-3 file:mr-4 file:rounded-lg file:border-0 file:bg-brand-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-brand-700" type="file" accept="image/*" onChange={handleFileChange} />
+                {previewUrl ? (
+                  <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/60">
+                    <img src={previewUrl} alt="Upload preview" className="h-56 w-full object-cover" />
+                  </div>
+                ) : (
+                  <div className="mt-4 flex h-56 items-center justify-center rounded-2xl border border-dashed border-white/10 bg-slate-950/35 text-sm text-slate-500 dark:text-slate-400">
+                    Selected image preview will appear here
+                  </div>
+                )}
+                <Button className="mt-4 w-full px-6 py-3" onClick={uploadFace} disabled={uploading || !selectedFile}>
+                  {uploading ? "Uploading..." : "Upload Face Image"}
+                </Button>
+              </div>
             </div>
           </div>
 
           <div className="rounded-[26px] border border-white/10 bg-slate-950/35 p-6">
-            <h3 className="text-lg font-bold">Live Registration Status</h3>
-            <div className="mt-5 space-y-4">
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs uppercase tracking-[0.35em] text-slate-500 dark:text-slate-400">Mode</p>
-                <p className="mt-2 text-2xl font-semibold">{registration?.status || "idle"}</p>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold">ESP32 Live Stream</h3>
+                <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Use your ESP32 stream URL here so you can line up the student before capturing.</p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs uppercase tracking-[0.35em] text-slate-500 dark:text-slate-400">Assigned Student</p>
-                <p className="mt-2 text-lg font-semibold">{registration?.student_name || "No student selected"}</p>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs uppercase tracking-[0.35em] text-slate-500 dark:text-slate-400">Status Message</p>
-                <p className="mt-2 text-sm leading-7 text-slate-500 dark:text-slate-300">{registration?.message || "No hardware registration in progress"}</p>
-              </div>
+              <Badge tone={streamUrl ? "success" : "warning"}>{streamUrl ? "Stream Ready" : "Add Stream URL"}</Badge>
+            </div>
+            <Input className="mt-5" placeholder="http://192.168.x.x:81/stream" value={streamUrl} onChange={(e) => setStreamUrl(e.target.value)} />
+            <div className="mt-4 overflow-hidden rounded-[24px] border border-white/10 bg-slate-950/70">
+              {streamUrl ? (
+                <img src={streamUrl} alt="ESP32 live stream" className="h-[320px] w-full object-cover" />
+              ) : (
+                <div className="flex h-[320px] items-center justify-center px-6 text-center text-sm text-slate-500 dark:text-slate-400">
+                  Add the ESP32 stream URL to preview the camera feed here.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 rounded-[26px] border border-white/10 bg-slate-950/35 p-6">
+          <h3 className="text-lg font-bold">Live Registration Status</h3>
+          <div className="mt-5 grid gap-4 xl:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <p className="text-xs uppercase tracking-[0.35em] text-slate-500 dark:text-slate-400">Mode</p>
+              <p className="mt-2 text-2xl font-semibold">{registration?.status || "idle"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <p className="text-xs uppercase tracking-[0.35em] text-slate-500 dark:text-slate-400">Assigned Student</p>
+              <p className="mt-2 text-lg font-semibold">{registration?.student_name || selectedStudent?.full_name || "No student selected"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <p className="text-xs uppercase tracking-[0.35em] text-slate-500 dark:text-slate-400">Status Message</p>
+              <p className="mt-2 text-sm leading-7 text-slate-500 dark:text-slate-300">{registration?.message || "No hardware registration in progress"}</p>
             </div>
           </div>
         </div>

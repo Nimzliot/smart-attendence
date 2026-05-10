@@ -1,4 +1,5 @@
 #include "esp_camera.h"
+#include "esp_http_server.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -35,10 +36,17 @@ const char* REGISTER_URL = "http://192.168.1.100:5000/api/device/register-face";
 const char* DEVICE_ID = "esp32-cam-01";
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+httpd_handle_t cameraHttpServer = NULL;
+httpd_handle_t streamHttpServer = NULL;
 unsigned long lastPingMillis = 0;
 unsigned long lastCaptureMillis = 0;
 unsigned long lastTaskCheckMillis = 0;
+unsigned long lastIpAnnounceMillis = 0;
 bool registrationPending = false;
+
+static const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=frame";
+static const char* STREAM_BOUNDARY = "\r\n--frame\r\n";
+static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
 void showMessage(const String& title, const String& line2 = "", const String& line3 = "") {
   display.clearDisplay();
@@ -48,6 +56,16 @@ void showMessage(const String& title, const String& line2 = "", const String& li
   if (line2.length()) display.println(line2);
   if (line3.length()) display.println(line3);
   display.display();
+}
+
+void announceIPAddress(bool showOnDisplay = true) {
+  String ip = WiFi.localIP().toString();
+  Serial.println("IP address: " + ip);
+  Serial.println("Stream URL: http://" + ip + ":81/stream");
+
+  if (showOnDisplay) {
+    showMessage("WiFi connected", "IP address:", ip);
+  }
 }
 
 void connectWiFi() {
@@ -61,7 +79,7 @@ void connectWiFi() {
   }
 
   Serial.println("\nWiFi connected");
-  showMessage("WiFi connected", WiFi.localIP().toString());
+  announceIPAddress(true);
 }
 
 bool initCamera() {
@@ -88,13 +106,81 @@ bool initCamera() {
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = FRAMESIZE_QVGA;
   config.jpeg_quality = 12;
-  config.fb_count = 1;
+  config.fb_count = psramFound() ? 2 : 1;
+  config.grab_mode = CAMERA_GRAB_LATEST;
 
   if (esp_camera_init(&config) != ESP_OK) {
     Serial.println("Camera init failed");
     return false;
   }
   return true;
+}
+
+static esp_err_t statusHandler(httpd_req_t* req) {
+  String html = "<!doctype html><html><body><h2>ESP32-CAM Ready</h2><p>Stream: <a href=\"/stream\">/stream</a></p></body></html>";
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_send(req, html.c_str(), html.length());
+}
+
+static esp_err_t streamHandler(httpd_req_t* req) {
+  camera_fb_t* fb = NULL;
+  char partBuffer[64];
+
+  httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+
+  while (true) {
+    fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("Stream capture failed");
+      return ESP_FAIL;
+    }
+
+    size_t headerLength = snprintf(partBuffer, sizeof(partBuffer), STREAM_PART, fb->len);
+    if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK ||
+        httpd_resp_send_chunk(req, partBuffer, headerLength) != ESP_OK ||
+        httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len) != ESP_OK) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+
+    esp_camera_fb_return(fb);
+  }
+
+  return ESP_OK;
+}
+
+void startCameraServer() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.max_uri_handlers = 8;
+
+  httpd_uri_t indexUri = {
+    .uri = "/",
+    .method = HTTP_GET,
+    .handler = statusHandler,
+    .user_ctx = NULL
+  };
+
+  httpd_uri_t streamUri = {
+    .uri = "/stream",
+    .method = HTTP_GET,
+    .handler = streamHandler,
+    .user_ctx = NULL
+  };
+
+  if (httpd_start(&cameraHttpServer, &config) == ESP_OK) {
+    httpd_register_uri_handler(cameraHttpServer, &indexUri);
+  }
+
+  config.server_port = 81;
+  config.ctrl_port = 32769;
+  if (httpd_start(&streamHttpServer, &config) == ESP_OK) {
+    httpd_register_uri_handler(streamHttpServer, &streamUri);
+    Serial.println("Camera stream started on port 81");
+  } else {
+    Serial.println("Failed to start stream server");
+  }
 }
 
 void sendPing() {
@@ -228,10 +314,16 @@ void setup() {
   }
 
   connectWiFi();
+  startCameraServer();
   sendPing();
 }
 
 void loop() {
+  if (WiFi.status() == WL_CONNECTED && millis() - lastIpAnnounceMillis > 60000) {
+    lastIpAnnounceMillis = millis();
+    announceIPAddress(!registrationPending);
+  }
+
   if (millis() - lastPingMillis > 30000) {
     lastPingMillis = millis();
     sendPing();

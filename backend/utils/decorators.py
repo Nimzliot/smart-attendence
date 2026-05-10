@@ -1,9 +1,9 @@
 from functools import wraps
 
-from flask import g, request
+from flask import current_app, g, request
 
 from services.auth_service import verify_supabase_token
-from services.supabase_service import get_supabase
+from services.supabase_service import get_supabase, reset_supabase
 from utils.response import error
 
 
@@ -33,16 +33,31 @@ def require_role(*allowed_roles):
             user_id = (g.current_user or {}).get("id") or (g.current_user or {}).get("sub")
 
             if user_id:
-                result = (
-                    get_supabase()
-                    .table("users")
-                    .select("role")
-                    .eq("auth_user_id", user_id)
-                    .limit(1)
-                    .execute()
-                )
-                if result.data:
-                    user_role = result.data[0].get("role")
+                for attempt in range(2):
+                    try:
+                        client = get_supabase() if attempt == 0 else reset_supabase()
+                        result = (
+                            client.table("users")
+                            .select("role")
+                            .eq("auth_user_id", user_id)
+                            .limit(1)
+                            .execute()
+                        )
+                        if result.data:
+                            user_role = result.data[0].get("role")
+                        break
+                    except Exception as exc:
+                        current_app.logger.warning(
+                            "Supabase role lookup failed for user %s on attempt %s: %s",
+                            user_id,
+                            attempt + 1,
+                            exc,
+                        )
+                        if attempt == 1:
+                            return error(
+                                "Temporary database connection issue. Please try again.",
+                                503,
+                            )
 
             if not user_role:
                 candidate_role = (g.current_user or {}).get("role") or (g.current_user or {}).get("app_metadata", {}).get("role")

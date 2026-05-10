@@ -23,6 +23,16 @@ def _decode_base64_image(image_b64: str):
         return None
 
 
+def _prepare_image_for_face_detection(image):
+    if image is None:
+        return None
+    height, width = image.shape[:2]
+    # ESP32-CAM frames are often too small for stable encodings, so upscale them first.
+    if max(height, width) < 640:
+        image = cv2.resize(image, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    return image
+
+
 def _get_largest_face_location(face_locations: list[tuple[int, int, int, int]]):
     if not face_locations:
         return None
@@ -101,7 +111,12 @@ def save_image_from_base64(image_b64: str) -> str:
 
 def get_face_encoding(image_path: str):
     image = face_recognition.load_image_file(image_path)
-    encodings = face_recognition.face_encodings(image)
+    image = _prepare_image_for_face_detection(image)
+    face_locations = face_recognition.face_locations(image, number_of_times_to_upsample=1, model="hog")
+    face_location = _get_largest_face_location(face_locations)
+    if not face_location:
+        return None
+    encodings = face_recognition.face_encodings(image, known_face_locations=[face_location], model="large")
     if not encodings:
         return None
     return encodings[0].tolist()
@@ -111,8 +126,13 @@ def detect_face_from_base64(image_b64: str):
     image = _decode_base64_image(image_b64)
     if image is None:
         return None
+    image = _prepare_image_for_face_detection(image)
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    encodings = face_recognition.face_encodings(rgb)
+    face_locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=1, model="hog")
+    face_location = _get_largest_face_location(face_locations)
+    if not face_location:
+        return None
+    encodings = face_recognition.face_encodings(rgb, known_face_locations=[face_location], model="large")
     if not encodings:
         return None
     return encodings[0].tolist()
@@ -201,6 +221,13 @@ def compare_with_students(face_encoding: list[float], tolerance: float):
     distances = face_recognition.face_distance(stored_encodings, np.array(face_encoding))
 
     if True not in matches:
+        if len(distances):
+            current_app.logger.info(
+                "Face not matched. best_distance=%.4f tolerance=%.4f candidates=%s",
+                float(np.min(distances)),
+                tolerance,
+                len(distances),
+            )
         return None
 
     best_index = int(np.argmin(distances))
